@@ -55,8 +55,18 @@ def main():
             return  # TODO
             orpheus.update_setting_storage()
         elif setting == 'test_modules':
-            return # TODO
+            results = []
+            for module_name in sorted(orpheus.module_list):
+                if ModuleFlags.hidden in orpheus.module_settings[module_name].flags:
+                    continue
+                success = orpheus.run_module_health_check(module_name)
+                results.append(success)
+            passed = sum(1 for r in results if r)
+            print(f'Module health checks passed: {passed}/{len(results)}')
+            return
         elif setting in orpheus.module_list:
+            if len(args.arguments) < 3:
+                raise Exception('Module settings require an additional option')
             orpheus.load_module(setting)
             modulesetting = args.arguments[2].lower()
             if modulesetting == 'update':
@@ -68,7 +78,10 @@ def main():
                 return  # TODO
             #elif modulesetting in [custom settings function list] TODO (here so test can be replaced)
             elif modulesetting == 'test': # Almost equivalent to sessions test
-                return  # TODO
+                success = orpheus.run_module_health_check(setting)
+                if not success:
+                    exit(1)
+                return
             else:
                 raise Exception(f'Unknown setting "{modulesetting}" for module "{setting}"')
         else:

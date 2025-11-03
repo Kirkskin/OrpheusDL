@@ -551,12 +551,12 @@ class Downloader:
                 self.print('Warning: converting spacial formats is not allowed, skipping')
             elif not old_codec_data.lossless and new_codec_data.lossless and not self.global_settings['advanced']['enable_undesirable_conversions']:
                 self.print('Warning: Undesirable lossy-to-lossless conversion detected, skipping')
-            elif not old_codec_data and not self.global_settings['advanced']['enable_undesirable_conversions']:
+            elif (not old_codec_data.lossless and not new_codec_data.lossless) and not self.global_settings['advanced']['enable_undesirable_conversions']:
                 self.print('Warning: Undesirable lossy-to-lossy conversion detected, skipping')
             else:
                 if not old_codec_data.lossless and new_codec_data.lossless:
                     self.print('Warning: Undesirable lossy-to-lossless conversion')
-                elif not old_codec_data:
+                elif not old_codec_data.lossless and not new_codec_data.lossless:
                     self.print('Warning: Undesirable lossy-to-lossy conversion')
 
                 try:

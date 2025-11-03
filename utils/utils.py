@@ -1,9 +1,10 @@
-import pickle, requests, errno, hashlib, math, os, re, operator
+import pickle, errno, hashlib, math, os, re, operator
+from functools import reduce
+
 from tqdm import tqdm
 from PIL import Image, ImageChops
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from functools import reduce
+
+from utils.network import NetworkError, network_manager
 
 
 def hash_string(input_str: str, hash_type: str = 'MD5'):
@@ -13,11 +14,7 @@ def hash_string(input_str: str, hash_type: str = 'MD5'):
         raise Exception('Invalid hash type selected')
 
 def create_requests_session():
-    session_ = requests.Session()
-    retries = Retry(total=10, backoff_factor=0.4, status_forcelist=[429, 500, 502, 503, 504])
-    session_.mount('http://', HTTPAdapter(max_retries=retries))
-    session_.mount('https://', HTTPAdapter(max_retries=retries))
-    return session_
+    return network_manager.session
 
 sanitise_name = lambda name : re.sub(r'[:]', ' - ', re.sub(r'[\\/*?"<>|$]', '', re.sub(r'[ \t]+$', '', str(name).rstrip()))) if name else ''
 
@@ -38,19 +35,22 @@ def fix_byte_limit(path: str, byte_limit=250):
     return directory + '/' + fixed_filename
 
 
-r_session = create_requests_session()
+def configure_request_session(allow_insecure_requests: bool):
+    """
+    Toggle TLS verification on the shared requests session.
+    """
+    network_manager.configure(allow_insecure_requests)
 
-def download_file(url, file_location, headers={}, enable_progress_bar=False, indent_level=0, artwork_settings=None):
+
+def download_file(url, file_location, headers=None, enable_progress_bar=False, indent_level=0, artwork_settings=None):
+    headers = headers or {}
     if os.path.isfile(file_location):
         return None
 
-    r = r_session.get(url, stream=True, headers=headers, verify=False)
-
-    total = None
-    if 'content-length' in r.headers:
-        total = int(r.headers['content-length'])
-
     try:
+        response = network_manager.request('GET', url, headers=headers, stream=True)
+        total = int(response.headers['content-length']) if 'content-length' in response.headers else None
+
         with open(file_location, 'wb') as f:
             if enable_progress_bar and total:
                 try:
@@ -61,32 +61,40 @@ def download_file(url, file_location, headers={}, enable_progress_bar=False, ind
                         raise
                 except:
                     bar = tqdm(total=total, unit='B', unit_scale=True, unit_divisor=1024, initial=0, miniters=1, bar_format=' '*indent_level + '{l_bar}{bar}{r_bar}')
-                # bar.set_description(' '*indent_level)
-                for chunk in r.iter_content(chunk_size=1024):
-                    if chunk:  # filter out keep-alive new chunks
+                for chunk in response.iter_content(chunk_size=1024):
+                    if chunk:
                         f.write(chunk)
                         bar.update(len(chunk))
                 bar.close()
             else:
-                [f.write(chunk) for chunk in r.iter_content(chunk_size=1024) if chunk]
+                for chunk in response.iter_content(chunk_size=1024):
+                    if chunk:
+                        f.write(chunk)
         if artwork_settings and artwork_settings.get('should_resize', False):
             new_resolution = artwork_settings.get('resolution', 1400)
             new_format = artwork_settings.get('format', 'jpeg')
-            if new_format == 'jpg': new_format = 'jpeg'
+            if new_format == 'jpg':
+                new_format = 'jpeg'
             new_compression = artwork_settings.get('compression', 'low')
             if new_compression == 'low':
                 new_compression = 90
             elif new_compression == 'high':
                 new_compression = 70
-            if new_format == 'png': new_compression = None
+            if new_format == 'png':
+                new_compression = None
             with Image.open(file_location) as im:
                 im = im.resize((new_resolution, new_resolution), Image.Resampling.BICUBIC)
                 im.save(file_location, new_format, quality=new_compression)
+        response.close()
     except KeyboardInterrupt:
         if os.path.isfile(file_location):
             print(f'\tDeleting partially downloaded file "{str(file_location)}"')
             silentremove(file_location)
         raise KeyboardInterrupt
+    except NetworkError as exc:
+        for hint in exc.hints:
+            print(f'\tHint: {hint}')
+        raise Exception(exc.message) from exc
 
 # root mean square code by Charlie Clark: https://code.activestate.com/recipes/577630-comparing-two-images/
 def compare_images(image_1, image_2):

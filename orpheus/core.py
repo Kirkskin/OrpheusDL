@@ -1,13 +1,12 @@
-import importlib, json, logging, os, pickle, requests, urllib3, base64, shutil
+import importlib, json, logging, os, pickle, requests, base64, shutil
+from copy import deepcopy
 from datetime import datetime
+from urllib.parse import urlparse
 
 from orpheus.music_downloader import Downloader
 from utils.models import *
 from utils.utils import *
 from utils.exceptions import *
-
-os.environ['CURL_CA_BUNDLE'] = ''  # Hack to disable SSL errors for requests module for easier debugging
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)  # Make SSL warnings hidden
 
 # try:
 #     time_request = requests.get('https://github.com') # to be replaced with something useful, like an Orpheus updates json
@@ -22,6 +21,18 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)  # Make SSL 
 timestamp_correction_term = 0
 # Use the same Oprinter instance wherever it's needed
 oprinter = Oprinter()
+
+
+def _resolve_env_placeholders(value):
+    if isinstance(value, dict):
+        return {k: _resolve_env_placeholders(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_env_placeholders(v) for v in value]
+    if isinstance(value, str) and value.startswith('$env:'):
+        token = value[5:]
+        env_name, _, default = token.partition('|')
+        return os.environ.get(env_name, default)
+    return value
 
 
 def true_current_utc_timestamp():
@@ -96,7 +107,8 @@ class Orpheus:
                 "disable_subscription_checks": False,
                 "enable_undesirable_conversions": False,
                 "ignore_existing_files": False,
-                "ignore_different_artists": True
+                "ignore_different_artists": True,
+                "allow_insecure_requests": False
             }
         }
 
@@ -105,7 +117,8 @@ class Orpheus:
         self.session_storage_location = os.path.join(self.data_folder_base, 'loginstorage.bin')
 
         os.makedirs('config', exist_ok=True)
-        self.settings = json.loads(open(self.settings_location, 'r').read()) if os.path.exists(self.settings_location) else {}
+        self.raw_settings = json.loads(open(self.settings_location, 'r').read()) if os.path.exists(self.settings_location) else {}
+        self.settings = _resolve_env_placeholders(deepcopy(self.raw_settings))
 
         try:
             if self.settings['global']['advanced']['debug_mode']: logging.basicConfig(level=logging.DEBUG)
@@ -131,7 +144,12 @@ class Orpheus:
         logging.debug('Orpheus: Modules detected: ' + ", ".join(module_list))
 
         for module in module_list:  # Loading module information into module_settings
-            module_information: ModuleInformation = getattr(importlib.import_module(f'modules.{module}.interface'), 'module_information', None)
+            try:
+                module_information: ModuleInformation = getattr(importlib.import_module(f'modules.{module}.interface'), 'module_information', None)
+            except ModuleNotFoundError as exc:
+                logging.warning(f'Orpheus: skipping module "{module}" due to missing dependency ({exc.name})')
+                continue
+
             if module_information and not ModuleFlags.private in module_information.flags and not private_mode:
                 self.module_list.add(module)
                 self.module_settings[module] = module_information
@@ -161,6 +179,7 @@ class Orpheus:
         if duplicates: raise Exception('Multiple modules installed that connect to the same service names: ' + ', '.join(' and '.join(duplicates)))
 
         self.update_module_storage()
+        configure_request_session(self.settings['global']['advanced'].get('allow_insecure_requests', False))
 
         for i in self.extension_list:
             extension_settings: ExtensionInformation = getattr(importlib.import_module(f'extensions.{i}.interface'), 'extension_settings', None)
@@ -245,7 +264,7 @@ class Orpheus:
         old_settings, new_settings, global_settings, extension_settings, module_settings, new_setting_detected = {}, {}, {}, {}, {}, False
 
         for i in ['global', 'extensions', 'modules']:
-            old_settings[i] = self.settings[i] if i in self.settings else {}
+            old_settings[i] = self.raw_settings[i] if i in self.raw_settings else {}
 
         for setting_type in self.default_global_settings:
             if setting_type in old_settings['global']:
@@ -349,10 +368,82 @@ class Orpheus:
 
         pickle.dump({'advancedmode': advanced_login_mode, 'modules': new_module_sessions}, open(self.session_storage_location, 'wb'))
         open(self.settings_location, 'w').write(json.dumps(new_settings, indent = 4, sort_keys = False))
+        self.raw_settings = new_settings
+        self.settings = _resolve_env_placeholders(deepcopy(new_settings))
 
         if new_setting_detected:
             print('New settings detected, or the configuration has been reset. Please update settings.json')
             exit()
+
+    def _parse_media_from_url(self, module_name: str, url: str, module):
+        module_info: ModuleInformation = self.module_settings[module_name]
+        if module_info.url_decoding is ManualEnum.manual:
+            if not hasattr(module, 'custom_url_parse'):
+                raise Exception(f'{module_name} does not provide custom_url_parse for manual decoding')
+            return module.custom_url_parse(url)
+
+        parsed_url = urlparse(url)
+        components = [component for component in parsed_url.path.split('/') if component]
+        if not components:
+            raise Exception(f'Invalid URL for module {module_name}: {url}')
+
+        url_constants = module_info.url_constants or {
+            'track': DownloadTypeEnum.track,
+            'album': DownloadTypeEnum.album,
+            'playlist': DownloadTypeEnum.playlist,
+            'artist': DownloadTypeEnum.artist
+        }
+
+        matches = [media_type for pattern, media_type in url_constants.items() if pattern in components]
+        if not matches:
+            raise Exception(f'Unable to match media type for module {module_name} using URL {url}')
+
+        return MediaIdentification(media_type=matches[-1], media_id=components[-1])
+
+    def run_module_health_check(self, module_name: str):
+        module_name = module_name.lower()
+        if module_name not in self.module_list:
+            raise Exception(f'Unknown module "{module_name}"')
+
+        module_info: ModuleInformation = self.module_settings[module_name]
+        test_url = getattr(module_info, 'test_url', None)
+        if not test_url:
+            print(f'{module_info.service_name}: no test URL defined, skipping health check.')
+            return False
+
+        module = self.load_module(module_name)
+        try:
+            media_identification = self._parse_media_from_url(module_name, test_url, module)
+        except Exception as exc:
+            print(f'{module_info.service_name}: failed to parse test URL - {exc}')
+            return False
+
+        quality_setting = QualityEnum[self.settings['global']['general']['download_quality'].upper()]
+        codec_options = CodecOptions(
+            proprietary_codecs=self.settings['global']['codecs']['proprietary_codecs'],
+            spatial_codecs=self.settings['global']['codecs']['spatial_codecs'],
+        )
+
+        extra_kwargs = media_identification.extra_kwargs or {}
+        try:
+            if media_identification.media_type is DownloadTypeEnum.track and hasattr(module, 'get_track_info'):
+                track_info = module.get_track_info(media_identification.media_id, quality_setting, codec_options, **extra_kwargs)
+                if getattr(track_info, 'error', None):
+                    raise Exception(track_info.error)
+            elif media_identification.media_type is DownloadTypeEnum.album and hasattr(module, 'get_album_info'):
+                module.get_album_info(media_identification.media_id, **extra_kwargs)
+            elif media_identification.media_type is DownloadTypeEnum.playlist and hasattr(module, 'get_playlist_info'):
+                module.get_playlist_info(media_identification.media_id, **extra_kwargs)
+            elif media_identification.media_type is DownloadTypeEnum.artist and hasattr(module, 'get_artist_info'):
+                module.get_artist_info(media_identification.media_id, self.settings['global']['artist_downloading']['return_credited_albums'])
+            else:
+                raise Exception('Unsupported media type for health check')
+        except Exception as exc:
+            print(f'{module_info.service_name}: health check failed - {exc}')
+            return False
+
+        print(f'{module_info.service_name}: health check passed.')
+        return True
 
 
 def orpheus_core_download(orpheus_session: Orpheus, media_to_download, third_party_modules, separate_download_module, output_path):

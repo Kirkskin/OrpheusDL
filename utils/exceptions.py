@@ -1,7 +1,13 @@
 import inspect
-from re import L
+from pathlib import Path
 
-get_module_name = lambda : next((s.filename for s in inspect.stack() if 'interface.py' in s.filename), None).split('/')[-2]
+
+def get_module_name():
+    for frame in inspect.stack():
+        filename = getattr(frame, 'filename', '')
+        if filename and filename.endswith('interface.py'):
+            return Path(filename).parent.name
+    return 'Unknown'
 
 class ModuleAuthError(Exception):
     def __init__(self):

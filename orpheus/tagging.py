@@ -143,7 +143,7 @@ def tag_file(file_path: str, image_path: str, track_info: TrackInfo, credits_lis
                 encoding=3,
                 lang=u'eng',
                 desc=u'',
-                text=track_info.tags.description
+                text=track_info.tags.comment
             )
 
     # add all extra_kwargs key value pairs to the (FLAC, Vorbis) file
