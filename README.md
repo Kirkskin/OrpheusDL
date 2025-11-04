@@ -5,23 +5,44 @@
 OrpheusDL
 =========
 
-A modular music archival program
+AI-assisted modular music archival suite
 
 [Report Bug](https://github.com/OrfiTeam/OrpheusDL/issues)
 ·
 [Request Feature](https://github.com/OrfiTeam/OrpheusDL/issues)
 
 
+## Highlights
+
+- Central **Orpheus Brain** collects telemetry from networking, login, delivery,
+  and CLI layers, providing actionable hints in real time.
+- Unified **Network Manager** with circuit breaker support, DNS diagnostics,
+  and optional offline simulation for testing.
+- **Service Registry & Session Manager** track module capabilities, credentials,
+  and pluggable login strategies (ARL, token, username/password).
+- **Delivery Pipeline** emits structured job events and is ready for queued or
+  parallel downloads.
+- **Interactive CLI Watchdog** exposes an AI-assisted menu (`--menu`) for health
+  checks, configuration introspection, and guided flows.
+- Extension SDK with shipping examples: `assistant` for guidance and `logger`
+  for structured event logs.
+
+
 ## Table of content
 
+- [Highlights](#highlights)
 - [About OrpheusDL](#about-orpheusdl)
 - [Getting Started](#getting-started)
     - [Prerequisites](#prerequisites)
     - [Installation](#installation)
 - [Usage](#usage)
+    - [Interactive CLI](#interactive-cli)
+    - [Offline mode and diagnostics](#offline-mode-and-diagnostics)
 - [Configuration](#configuration)
     - [Global/Formatting](#globalformatting)
         - [Format variables](#format-variables)
+- [Architecture & Roadmap](#architecture--roadmap)
+- [Development](#development)
 - [Contact](#contact)
 - [Acknowledgements](#acknowledgements)
 
@@ -52,11 +73,16 @@ Follow these steps to get a local copy of Orpheus up and running:
    ```shell
    pip install -r requirements.txt
    ```
-3. Run the program at least once, or use this command to create the settings file
+3. Duplicate the environment template and populate credentials/tokens:
+   ```shell
+   cp .env.template .env
+   # edit .env with your service secrets
+   ```
+4. Run the program at least once, or use this command to create the settings file
    ```shell
    python3 orpheus.py settings refresh
    ```
-4. Enter your credentials in `config/settings.json`
+5. Adjust defaults in `config/settings.json` if needed (download path, quality).
 
 <!-- USAGE EXAMPLES -->
 ## Usage
@@ -75,6 +101,30 @@ Or if you have the ID of what you want to download, use:
 ```shell
 python3 orpheus.py download qobuz track 52151405
 ```
+
+### Interactive CLI
+
+Prefer a guided experience? Launch the AI-assisted menu:
+
+```shell
+python3 orpheus.py --menu
+```
+
+The menu currently offers module health checks, configuration summaries, and
+service capability listings. Extensions can register new actions without
+changing core code.
+
+### Offline mode and diagnostics
+
+When upstream services are unreachable (VPNs, DNS blocking), you can simulate
+behaviour without hitting the network:
+
+```shell
+python3 orpheus.py config offline on
+```
+
+Disable it again with `python3 orpheus.py config offline off`. After each
+command the CLI watchdog prints AI hints, calling out DNS, SSL, or auth issues.
 
 <!-- CONFIGURATION -->
 ## Configuration
@@ -225,6 +275,26 @@ selected module
 | embed_lyrics        | Embeds the (unsynced) lyrics inside every track                                                                                                                     |
 | embed_synced_lyrics | Embeds the synced lyrics inside every track (needs `embed_lyrics` to be enabled) (required for [Roon](https://community.roonlabs.com/t/1-7-lyrics-tag-guide/85182)) |
 | save_synced_lyrics  | Saves the synced lyrics inside a  `.lrc` file in the same directory as the track with the same `track_format` variables                                             |
+
+## Architecture & Roadmap
+
+The legacy roadmap has been superseded by an AI-centric blueprint. See
+[`docs/architecture_overview.md`](docs/architecture_overview.md) for details on
+the Orpheus Brain, service registry, login manager, network fabric, delivery
+pipeline, CLI, and extension ecosystem. That document is the authoritative
+guide for new development.
+
+## Development
+
+Run the automated tests before submitting changes:
+
+```shell
+/tmp/orpheus_venv/bin/python -m unittest tests.test_core tests.test_network tests.test_services tests.test_integration
+```
+
+When adding modules or extensions, implement the contracts defined in
+`orpheus/modules/base.py` and `orpheus/extensions/sdk.py`, emitting telemetry so
+the brain can keep users informed.
 
 <!-- Contact -->
 ## Contact

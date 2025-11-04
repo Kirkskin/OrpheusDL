@@ -35,7 +35,6 @@
 | deezer | https://github.com/uhwot/orpheusdl-deezer | master | b6e3492a27e53f9311126971b719b1b17405d2c4 |
 | beatport | https://github.com/Dniel97/orpheusdl-beatport | master | cfd182ceffaf121e5b2023d166d96280a22e7654 |
 | soundcloud | https://github.com/OrfiDev/orpheusdl-soundcloud.git | master | 7fc264910ac9a896b91a8428fb1e9b822413e37e |
-| applemusic | https://github.com/OrfiDev/orpheusdl-applemusic-basic | master | 0bfec77d87012a91dd2a6f5de5dc065449ff80b5 |
 | bugsmusic | https://github.com/Dniel97/orpheusdl-bugsmusic | master | 3b3c0a3c3ea0ea5f606498dd1066a986eeb419a4 |
 | jiosaavn | https://github.com/bunnykek/orpheusdl-jiosaavn | master | 0c20361935f83c61972b7eddccda446be57090ec |
 | nugs | https://github.com/Dniel97/orpheusdl-nugs | master | b65718c1dd7b22d57eac645fc960b24a3a24aa0a |

@@ -7,6 +7,9 @@ from orpheus.music_downloader import Downloader
 from utils.models import *
 from utils.utils import *
 from utils.exceptions import *
+from orpheus.services import brain, service_registry, session_manager, NetworkEvent, LoginEvent
+from orpheus.delivery import delivery_pipeline
+from orpheus.modules.base import has_contract_methods
 
 # try:
 #     time_request = requests.get('https://github.com') # to be replaced with something useful, like an Orpheus updates json
@@ -119,6 +122,7 @@ class Orpheus:
         os.makedirs('config', exist_ok=True)
         self.raw_settings = json.loads(open(self.settings_location, 'r').read()) if os.path.exists(self.settings_location) else {}
         self.settings = _resolve_env_placeholders(deepcopy(self.raw_settings))
+        service_registry.load_from_config(self.settings)
 
         try:
             if self.settings['global']['advanced']['debug_mode']: logging.basicConfig(level=logging.DEBUG)
@@ -148,14 +152,20 @@ class Orpheus:
                 module_information: ModuleInformation = getattr(importlib.import_module(f'modules.{module}.interface'), 'module_information', None)
             except ModuleNotFoundError as exc:
                 logging.warning(f'Orpheus: skipping module "{module}" due to missing dependency ({exc.name})')
+                brain.record_event(NetworkEvent(service=module, error_code='MISSING_DEPENDENCY', message=f'Module skipped: missing {exc.name}'))
                 continue
 
             if module_information and not ModuleFlags.private in module_information.flags and not private_mode:
                 self.module_list.add(module)
                 self.module_settings[module] = module_information
+                if ModuleModes.download in module_information.module_supported_modes:
+                    contract_info = has_contract_methods(getattr(importlib.import_module(f'modules.{module}.interface'), 'ModuleInterface', object))
+                    if contract_info['missing_required']:
+                        logging.warning(f'Orpheus: module "{module}" does not implement required DownloadModule methods.')
                 logging.debug(f'Orpheus: {module} added as a module')
             else:
-                raise Exception(f'Error loading module information from module: "{module}"') # TODO: replace with InvalidModuleError
+                logging.warning(f'Orpheus: skipping module "{module}" due to invalid or private module information.')
+                continue
 
         duplicates = set()
         for module in self.module_list: # Detecting duplicate url constants
@@ -236,14 +246,21 @@ class Orpheus:
                     # Login if simple mode, username login and requested by update_setting_storage
                     if temporary_session and temporary_session['clear_session'] and not self.settings['global']['advanced']['advanced_login_system']:
                         hashes = {k: hash_string(str(v)) for k, v in settings.items()}
-                        if not temporary_session.get('hashes') or \
-                            any(k not in hashes or hashes[k] != v for k,v in temporary_session['hashes'].items() if k in self.module_settings[module].session_settings):
-                            print('Logging into ' + self.module_settings[module].service_name)
-                            try:
-                                loaded_module.login(settings['email'] if 'email' in settings else settings['username'], settings['password'])
-                            except:
-                                set_temporary_setting(self.session_storage_location, module, 'hashes', None, {})
-                                raise
+                        should_login = not temporary_session.get('hashes') or \
+                            any(k not in hashes or hashes[k] != v for k,v in temporary_session['hashes'].items() if k in self.module_settings[module].session_settings)
+                        if should_login:
+                            print('Authenticating ' + self.module_settings[module].service_name)
+                            if not session_manager.authenticate(module, loaded_module):
+                                session_manager.update_status(module, 'authenticating', strategy='legacy')
+                                try:
+                                    loaded_module.login(settings.get('email') or settings.get('username'), settings['password'])
+                                    session_manager.update_status(module, 'authenticated', strategy='legacy')
+                                    brain.record_event(LoginEvent(service=module, outcome='success', strategy='legacy'))
+                                except Exception:
+                                    session_manager.update_status(module, 'failed', strategy='legacy', error='login_exception')
+                                    brain.record_event(LoginEvent(service=module, outcome='failure', strategy='legacy'))
+                                    set_temporary_setting(self.session_storage_location, module, 'hashes', None, {})
+                                    raise
                             set_temporary_setting(self.session_storage_location, module, 'hashes', None, hashes)
                     if ModuleFlags.enable_jwt_system in self.module_settings[module].flags and temporary_session and \
                             temporary_session['refresh'] and not temporary_session['bearer']:
@@ -477,22 +494,33 @@ def orpheus_core_download(orpheus_session: Orpheus, media_to_download, third_par
             media_id = media.media_id
 
             downloader.download_mode = mediatype
+            job_id = delivery_pipeline.begin_job(mainmodule, mediatype.name, media_id)
 
             # Mode to download playlist using other service
             if separate_download_module != 'default' and separate_download_module != mainmodule:
                 if mediatype is not DownloadTypeEnum.playlist:
                     raise Exception('The separate download module option is only for playlists.') # TODO: replace with ModuleDoesNotSupportAbility
-                downloader.download_playlist(media_id, custom_module=separate_download_module, extra_kwargs=media.extra_kwargs)
+                try:
+                    downloader.download_playlist(media_id, custom_module=separate_download_module, extra_kwargs=media.extra_kwargs)
+                    delivery_pipeline.complete_job(job_id, mainmodule, True)
+                except Exception:
+                    delivery_pipeline.complete_job(job_id, mainmodule, False, reason='playlist_download_failed')
+                    raise
             else:  # Standard download modes
-                if mediatype is DownloadTypeEnum.album:
-                    downloader.download_album(media_id, extra_kwargs=media.extra_kwargs)
-                elif mediatype is DownloadTypeEnum.track:
-                    downloader.download_track(media_id, extra_kwargs=media.extra_kwargs)
-                elif mediatype is DownloadTypeEnum.playlist:
-                    downloader.download_playlist(media_id, extra_kwargs=media.extra_kwargs)
-                elif mediatype is DownloadTypeEnum.artist:
-                    downloader.download_artist(media_id, extra_kwargs=media.extra_kwargs)
-                else:
-                    raise Exception(f'\tUnknown media type "{mediatype}"')
+                try:
+                    if mediatype is DownloadTypeEnum.album:
+                        downloader.download_album(media_id, extra_kwargs=media.extra_kwargs)
+                    elif mediatype is DownloadTypeEnum.track:
+                        downloader.download_track(media_id, extra_kwargs=media.extra_kwargs)
+                    elif mediatype is DownloadTypeEnum.playlist:
+                        downloader.download_playlist(media_id, extra_kwargs=media.extra_kwargs)
+                    elif mediatype is DownloadTypeEnum.artist:
+                        downloader.download_artist(media_id, extra_kwargs=media.extra_kwargs)
+                    else:
+                        raise Exception(f'\tUnknown media type "{mediatype}"')
+                    delivery_pipeline.complete_job(job_id, mainmodule, True)
+                except Exception:
+                    delivery_pipeline.complete_job(job_id, mainmodule, False, reason='download_failed')
+                    raise
 
     if os.path.exists('temp'): shutil.rmtree('temp')

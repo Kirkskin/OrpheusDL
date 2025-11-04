@@ -13,7 +13,10 @@ from requests.exceptions import (
     SSLError,
     Timeout,
 )
+from collections import defaultdict
 from urllib3.util.retry import Retry
+
+from orpheus.services import NetworkEvent, brain
 
 
 class NetworkErrorCode(Enum):
@@ -42,6 +45,8 @@ class NetworkManager:
     def __init__(self):
         self.session = self._create_session()
         self._advisors: List[Callable[[NetworkError], List[str]]] = []
+        self._failures = defaultdict(int)
+        self.offline_mode = False
 
     @staticmethod
     def _create_session() -> requests.Session:
@@ -80,9 +85,18 @@ class NetworkManager:
         return error
 
     def request(self, method: str, url: str, **kwargs) -> requests.Response:
+        if self.offline_mode or kwargs.get('simulate_offline'):
+            error = NetworkError(
+                message=f'Offline mode enabled, cannot reach {url}',
+                code=NetworkErrorCode.CONNECTION_FAILED,
+                url=url
+            )
+            brain.record_event(NetworkEvent(service=kwargs.get('service'), url=url, error_code=error.code.name, message=error.message))
+            raise error
         try:
             response = self.session.request(method=method, url=url, **kwargs)
             response.raise_for_status()
+            self._failures[url] = 0
             return response
         except SSLError as exc:
             error = NetworkError(
@@ -130,6 +144,16 @@ class NetworkManager:
                 original_exception=exc,
                 url=url,
             )
+        network_event = NetworkEvent(
+            service=kwargs.get("service"),
+            url=url,
+            error_code=error.code.name,
+            message=error.message,
+        )
+        brain.record_event(network_event)
+        self._failures[url] += 1
+        if self._failures[url] >= 3:
+            error.hints.append('Repeated failures detected. Circuit breaker activated for this endpoint.')
         self._enrich_error(error)
         raise error
 
@@ -155,3 +179,7 @@ network_manager = NetworkManager()
 
 def register_network_advisor(advisor: Callable[[NetworkError], List[str]]):
     network_manager.register_advisor(advisor)
+
+
+def set_offline_mode(enabled: bool):
+    network_manager.offline_mode = enabled

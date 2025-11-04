@@ -7,6 +7,7 @@ from time import strftime, gmtime
 from ffmpeg import Error
 
 from orpheus.tagging import tag_file
+from orpheus.services.metadata import metadata_normalizer
 from utils.models import *
 from utils.utils import *
 from utils.exceptions import *
@@ -292,6 +293,8 @@ class Downloader:
             proprietary_codecs = self.global_settings['codecs']['proprietary_codecs'],
         )
         track_info: TrackInfo = self.service.get_track_info(track_id, quality_tier, codec_options, **extra_kwargs)
+        normalized_track = metadata_normalizer.normalize_track(track_info)
+        logging.debug('Normalized track metadata: %s', normalized_track.metadata)
         
         if main_artist.lower() not in [i.lower() for i in track_info.artists] and self.global_settings['advanced']['ignore_different_artists'] and self.download_mode is DownloadTypeEnum.artist:
            self.print('Track is not from the correct artist, skipping', drop_level=1)
